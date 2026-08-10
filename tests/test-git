@@ -78,13 +78,101 @@ test_no_unknown()
     posttest
 }
 
-# "%s" expands to nothing if no unstaged files
-test_staged_files {
-	pretest
-	touch .git/new_file
-	git add .git/new_file
-	assert_vcprompt "staged" "master%" "%s"
+# "%a" expands to "*" if there are staged files, nothing otherwise
+test_staged_files()
+{
+    pretest
+    touch .git/tainted
+    assert_vcprompt "nothing staged" "" "%a"
+    touch newfile
+    git add newfile
+    assert_vcprompt "staged" "*" "%a"
+    git reset -q --hard HEAD
+    posttest
+}
 
+# a linked worktree keeps .git as a *file* pointing at the real gitdir;
+# both the branch and the revision must still resolve
+test_worktree()
+{
+    pretest
+    touch .git/tainted
+    rm -rf $tmpdir/worktree
+    git worktree add -q -b wtbranch $tmpdir/worktree >/dev/null 2>&1
+    revision=`git rev-parse --short=12 wtbranch`
+
+    cd $tmpdir/worktree
+    assert_vcprompt "worktree branch" "wtbranch" "%b"
+    assert_vcprompt "worktree revision" "$revision" "%r"
+    cd $tmpdir/git-repo
+
+    git worktree remove --force $tmpdir/worktree >/dev/null 2>&1
+    git branch -q -D wtbranch
+    posttest
+}
+
+# a submodule uses the same .git pointer file as a worktree, except that
+# the path is relative to the submodule directory; the submodule's own
+# branch and revision are reported, not the superproject's
+test_submodule()
+{
+    pretest
+    touch .git/tainted
+
+    rm -rf $tmpdir/submodule-src
+    git init -q $tmpdir/submodule-src
+    (cd $tmpdir/submodule-src &&
+     git config user.name "test" &&
+     git config user.email "test" &&
+     # a branch name distinct from the superproject's, so that the
+     # assertions below cannot pass by reporting the superproject
+     git symbolic-ref HEAD refs/heads/submodulebranch &&
+     echo sub > subfile &&
+     git add subfile &&
+     git commit -q -m "add subfile")
+    subbranch=`cd $tmpdir/submodule-src && git rev-parse --abbrev-ref HEAD`
+    subrevision=`cd $tmpdir/submodule-src && git rev-parse --short=12 HEAD`
+
+    git -c protocol.file.allow=always submodule add -q \
+        $tmpdir/submodule-src sub >/dev/null 2>&1
+
+    if [ ! -f sub/.git ]; then
+        echo "skip: this git does not use .git pointer files for submodules"
+        posttest
+        return
+    fi
+
+    cd sub
+    assert_vcprompt "submodule branch" "$subbranch" "%b"
+    assert_vcprompt "submodule revision" "$subrevision" "%r"
+    cd ..
+
+    rm -rf $tmpdir/submodule-src
+    posttest
+}
+
+# a stale or foreign .git file must not stop the search: vcprompt should
+# keep walking up and report the enclosing repository
+test_stale_gitdir()
+{
+    pretest
+    touch .git/tainted
+    revision=`git rev-parse --short=12 HEAD`
+
+    mkdir -p stale
+    echo "gitdir: /nonexistent/.git/worktrees/gone" > stale/.git
+    cd stale
+    assert_vcprompt "stale pointer falls back" "master:$revision" "%b:%r"
+    cd ..
+
+    mkdir -p junkdir
+    echo "not a gitdir pointer at all" > junkdir/.git
+    cd junkdir
+    assert_vcprompt "foreign .git file falls back" "master:$revision" "%b:%r"
+    cd ..
+
+    rm -rf stale junkdir
+    posttest
 }
 
 check_git
@@ -98,5 +186,9 @@ failed=""
 test_basics
 test_no_modified
 test_no_unknown
+test_staged_files
+test_worktree
+test_submodule
+test_stale_gitdir
 
 report

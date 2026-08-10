@@ -196,7 +196,7 @@ void
 chop_newline(char* buf)
 {
     int len = strlen(buf);
-    if (buf[len-1] == '\n')
+    if (len > 0 && buf[len-1] == '\n')
         buf[len-1] = '\0';
 }
 
