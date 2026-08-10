@@ -8,6 +8,7 @@
  */
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -109,6 +110,47 @@ git_common_dir(char* gitdir, char* buf, int size)
     return build_path(buf, size, "%s", gitdir);
 }
 
+/* Look up refname (e.g. "refs/heads/master") in the packed-refs file, which
+   is where refs live after "git gc" or "git pack-refs" -- and in any freshly
+   cloned repository.  Writes the object ID to buf and returns 1 on success. */
+static int
+read_packed_ref(char* commondir, char* refname, char* buf, int size)
+{
+    char filename[1024];
+    char line[1024];
+    FILE* file;
+    int found = 0;
+
+    if (!build_path(filename, sizeof(filename), "%s/packed-refs", commondir))
+        return 0;
+    file = fopen(filename, "r");
+    if (file == NULL) {
+        debug("error opening '%s': %s", filename, strerror(errno));
+        return 0;
+    }
+
+    while (!found && fgets(line, sizeof(line), file) != NULL) {
+        char* sep;
+
+        /* "# pack-refs with: ..." headers and "^<oid>" peeled-tag lines
+           are not refs; every other line is "<oid> <refname>". */
+        if (line[0] == '#' || line[0] == '^')
+            continue;
+        chop_trailing_space(line);
+        sep = strchr(line, ' ');
+        if (sep == NULL)
+            continue;
+        *sep = '\0';
+        if (strcmp(sep + 1, refname) == 0)
+            found = build_path(buf, size, "%s", line);
+    }
+    fclose(file);
+
+    if (!found)
+        debug("no '%s' line in %s", refname, filename);
+    return found;
+}
+
 static int
 git_probe(vccontext_t* context)
 {
@@ -162,13 +204,19 @@ git_get_info(vccontext_t* context)
                 char buf[1024];
                 char commondir[1024];
                 char filename[1024];
+                char refname[1024];
 
                 if (git_common_dir(gitdir, commondir, sizeof(commondir))
-                    && build_path(filename, sizeof(filename),
-                                  "%s/refs/heads/%s",
-                                  commondir, result->branch)
-                    && read_first_line(filename, buf, 1024)) {
-                    result_set_revision(result, buf, 12);
+                    && build_path(refname, sizeof(refname), "refs/heads/%s",
+                                  result->branch)
+                    && build_path(filename, sizeof(filename), "%s/%s",
+                                  commondir, refname)) {
+                    /* the ref is either a loose file under refs/heads, or
+                       -- once packed -- a line in the packed-refs file */
+                    if (read_first_line(filename, buf, sizeof(buf))
+                        || read_packed_ref(commondir, refname,
+                                           buf, sizeof(buf)))
+                        result_set_revision(result, buf, 12);
                 }
             }
         }

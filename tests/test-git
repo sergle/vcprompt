@@ -111,6 +111,49 @@ test_worktree()
     posttest
 }
 
+# "git gc", "git pack-refs" and a fresh clone all move refs out of
+# refs/heads and into the packed-refs file
+test_packed_refs()
+{
+    pretest
+    touch .git/tainted
+    revision=`git rev-parse --short=12 HEAD`
+
+    git pack-refs --all
+    if [ -f .git/refs/heads/master ]; then
+        echo "skip: this git kept a loose ref after pack-refs"
+        posttest
+        return
+    fi
+    assert_vcprompt "packed refs" "master:$revision" "%b:%r"
+    posttest
+}
+
+# a worktree must find its branch in the main repository's packed-refs too
+test_packed_refs_worktree()
+{
+    pretest
+    touch .git/tainted
+    revision=`git rev-parse --short=12 HEAD`
+
+    rm -rf $tmpdir/packed-wt
+    git worktree add -q -b packedbranch $tmpdir/packed-wt >/dev/null 2>&1
+    git pack-refs --all
+    if [ -f .git/refs/heads/packedbranch ]; then
+        echo "skip: this git kept a loose ref after pack-refs"
+        posttest
+        return
+    fi
+
+    cd $tmpdir/packed-wt
+    assert_vcprompt "packed refs in worktree" "packedbranch:$revision" "%b:%r"
+    cd $tmpdir/git-repo
+
+    git worktree remove --force $tmpdir/packed-wt >/dev/null 2>&1
+    git branch -q -D packedbranch
+    posttest
+}
+
 # a submodule uses the same .git pointer file as a worktree, except that
 # the path is relative to the submodule directory; the submodule's own
 # branch and revision are reported, not the superproject's
@@ -188,6 +231,8 @@ test_no_modified
 test_no_unknown
 test_staged_files
 test_worktree
+test_packed_refs
+test_packed_refs_worktree
 test_submodule
 test_stale_gitdir
 

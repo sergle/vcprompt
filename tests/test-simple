@@ -44,6 +44,19 @@ test_simple_git()
     assert_vcprompt "git subdir" "foo"
 }
 
+# a format string ending in a bare '%' must print a literal '%', not a
+# stray NUL byte (which would corrupt prompt width calculations)
+test_format_trailing_percent()
+{
+    cd $tmpdir
+    mkdir fmt && cd fmt
+    mkdir .git
+    echo "ref: refs/heads/foo" > .git/HEAD
+
+    assert_vcprompt "trailing percent" "foo%" "%b%"
+    assert_vcprompt "escaped percent" "100%" "100%%"
+}
+
 test_bad_dir()
 {
     cd $tmpdir
@@ -97,6 +110,7 @@ failed=""
 test_no_vc
 test_root
 test_simple_git
+test_format_trailing_percent
 test_bad_dir
 test_env_var
 test_help
