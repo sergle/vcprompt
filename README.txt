@@ -3,11 +3,12 @@ vcprompt
 
 vcprompt is a little C program that prints a short string, designed to
 be included in your prompt, with barebones information about the current
-working directory for various version control systems.  It is designed
-to be small and lightweight rather than comprehensive.
+working directory.  It is designed to be small and lightweight rather
+than comprehensive.
 
-Currently, it has varying degrees of recognition for Mercurial, Git,
-CVS, and Subversion working copies.
+This fork recognizes Git working copies only, including linked worktrees
+and submodules.  Support for Mercurial, Subversion, CVS, and Fossil has
+been removed; use the upstream vcprompt if you need those.
 
 vcprompt has no external dependencies: it does everything with the
 standard C library and POSIX calls.  It should work on any
@@ -53,25 +54,20 @@ are equivalent.
 Format strings use printf-like "%" escape sequences:
 
   %n  name of the VC system managing the current directory
-      (e.g. "cvs", "hg", "git", "svn")
+      (always "git")
   %b  current branch name
   %r  current revision
   %u  ? if there are any unknown files
   %m  + if there are any uncommitted changes (added, modified, or
       removed files)
+  %a  * if there are any staged changes
   %%  a single % character
 
 All other characters are expanded as-is.
 
 The default format string is
 
-  [%n:%b]
-
-which is notable because it works with every supported VC system.  In
-fact, some features are meaningless with some systems: there is no
-single current revision with CVS, for example.  (And there is no good
-way to quickly find out if there are any uncommitted changes or unknown
-files, for that matter.)
+  [%n:%b%m%u]
 
 
 Contributing
@@ -85,9 +81,8 @@ Patches are welcome.  Please follow these guidelines:
 
   * If at all possible, add a test whenever you fix a bug or implement a
     feature.  If you can write a test that has no dependencies (e.g. no
-    need to execute "git" or "hg" or whatever), add it to
-    tests/test-simple.  Otherwise, add it to the appropriate VC-specific
-    test script, e.g. tests/test-git if it needs to be able to run git.
+    need to execute "git"), add it to tests/test-simple.  Otherwise, add
+    it to tests/test-git, which requires a real git executable.
 
   * Keep the dependencies minimal: preferably just C99 and POSIX.
     If you need to run an external executable, make sure it makes
@@ -102,10 +97,8 @@ Patches are welcome.  Please follow these guidelines:
     point of vcprompt.
 
     In fact, you'll find that vcprompt contains hacky little
-    reimplementations of select bits and pieces of Mercurial, git,
-    Subversion, and CVS precisely in order to avoid running external
-    commands.  (And, in the case of Subversion, to avoid depending on a
-    large, complex library.)
+    reimplementations of select bits and pieces of git precisely in
+    order to avoid running external commands.
 
   * Stick with my coding style:
     - 4 space indents

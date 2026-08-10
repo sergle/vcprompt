@@ -15,14 +15,7 @@
 #include <unistd.h>
 
 #include "common.h"
-#include "cvs.h"
 #include "git.h"
-#include "hg.h"
-#include "svn.h"
-#include "fossil.h"
-/*
-#include "bzr.h"
-*/
 
 #define DEFAULT_FORMAT "[%n:%b%m%u] "
 
@@ -205,11 +198,7 @@ int main(int argc, char** argv)
     set_options(&options);
 
     vccontext_t* contexts[] = {
-        get_cvs_context(&options),
         get_git_context(&options),
-        get_hg_context(&options),
-        get_svn_context(&options),
-        get_fossil_context(&options),
     };
     int num_contexts = sizeof(contexts) / sizeof(vccontext_t*);
 
