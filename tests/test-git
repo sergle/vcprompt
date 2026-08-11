@@ -194,6 +194,34 @@ test_submodule()
     posttest
 }
 
+# a "git status" line longer than vcprompt's read buffer must not have its
+# tail parsed as though it were a second status line
+test_long_path()
+{
+    pretest
+    touch .git/tainted
+
+    seg=`awk 'BEGIN { s = ""; while (length(s) < 200) s = s "d"; print s }'`
+    dir="$seg/$seg/$seg/$seg/$seg/$seg/$seg"
+    if ! mkdir -p "$dir" 2>/dev/null; then
+        echo "skip: filesystem will not take a 1400-character path"
+        posttest
+        return
+    fi
+
+    echo deep > "$dir/deep"
+    git add -A
+    git commit -q -m "deep file"
+
+    # modify it in the working tree only: "%a" must stay empty, which it
+    # will not if the truncated tail of the status line is misparsed
+    echo modified >> "$dir/deep"
+    assert_vcprompt "long status line" "+" "%m%a"
+
+    git reset -q --hard HEAD
+    posttest
+}
+
 # a stale or foreign .git file must not stop the search: vcprompt should
 # keep walking up and report the enclosing repository
 test_stale_gitdir()
@@ -234,6 +262,7 @@ test_worktree
 test_packed_refs
 test_packed_refs_worktree
 test_submodule
+test_long_path
 test_stale_gitdir
 
 report

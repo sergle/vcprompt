@@ -94,7 +94,7 @@ void parse_format(options_t* options)
     }
 }
 
-void print_result(vccontext_t* context, options_t* options, result_t* result)
+void print_result(options_t* options, result_t* result)
 {
     size_t i;
     char* format = options->format;
@@ -129,7 +129,7 @@ void print_result(vccontext_t* context, options_t* options, result_t* result)
                         putc('*', stdout);
                     break;
                 case 'n':
-                    fputs(context->name, stdout);
+                    fputs(GIT_NAME, stdout);
                     break;
                 default:                /* %x printed as x */
                     putc(format[i], stdout);
@@ -141,40 +141,28 @@ void print_result(vccontext_t* context, options_t* options, result_t* result)
     }
 }
 
-vccontext_t* probe_all(vccontext_t** contexts, int num_contexts)
+/* Walk up the directory tree, chdir()ing as we go, until we find a git
+   working copy or hit the root.  Returns 1 having chdir()ed to the working
+   copy, 0 if there is none. */
+int find_working_copy(void)
 {
-    int idx;
-    for (idx = 0; idx < num_contexts; idx++) {
-        vccontext_t* ctx = contexts[idx];
-        if (ctx->probe(ctx)) {
-            return ctx;
-        }
-    }
-    return NULL;
-}
-
-/* walk up the directory tree until the probes work or we hit / */
-vccontext_t* probe_parents(vccontext_t** contexts, int num_contexts)
-{
-    vccontext_t* context;
     struct stat rootdir;
     struct stat curdir;
 
     stat("/", &rootdir);
     while (1) {
-        context = probe_all(contexts, num_contexts);
-        if (context != NULL) {
-            debug("found a context");
-            return context;
+        if (git_probe()) {
+            debug("found a git working copy");
+            return 1;
         }
 
         stat(".", &curdir);
         int isroot = (rootdir.st_dev == curdir.st_dev &&
                       rootdir.st_ino == curdir.st_ino);
         if (isroot || (-1 == chdir(".."))) {
-            return NULL;
+            return 0;
         }
-	debug("no context claimed current dir: walking up the tree");
+        debug("not a working copy: walking up the tree");
     }
 }
 
@@ -197,27 +185,15 @@ int main(int argc, char** argv)
     parse_format(&options);
     set_options(&options);
 
-    vccontext_t* contexts[] = {
-        get_git_context(&options),
-    };
-    int num_contexts = sizeof(contexts) / sizeof(vccontext_t*);
-
-    result_t* result = NULL;
-    vccontext_t* context = NULL;
-
-    /* Starting in the current dir, walk up the directory tree until
-       someone claims that this is a working copy. */
-    context = probe_parents(contexts, num_contexts);
-
-    /* Nobody claimed it: bail now without printing anything. */
-    if (context == NULL) {
+    /* Starting in the current dir, walk up the directory tree looking
+       for a working copy.  Not found: bail without printing anything. */
+    if (!find_working_copy())
         return 0;
-    }
 
     /* Analyze the working copy metadata and print the result. */
-    result = context->get_info(context);
+    result_t* result = git_get_info(&options);
     if (result != NULL) {
-        print_result(context, &options, result);
+        print_result(&options, result);
         free_result(result);
         if (options.debug)
             putc('\n', stdout);

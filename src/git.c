@@ -9,11 +9,14 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 #include <sys/wait.h>
+#include <unistd.h>
 #include "git.h"
 
 /* Build a path in buf with printf() semantics.  Returns 0 (and complains in
@@ -151,8 +154,114 @@ read_packed_ref(char* commondir, char* refname, char* buf, int size)
     return found;
 }
 
-static int
-git_probe(vccontext_t* context)
+/* Run "git status --porcelain" and set result->modified, ->staged and
+   ->unknown from its output.
+
+   This is the one place where we shell out, because reproducing git's
+   index-vs-worktree comparison here would be a bad idea.  One invocation
+   answers all three questions, and we exec git directly rather than going
+   through system(), which would spawn a shell first. */
+static void
+git_status(options_t* options, result_t* result)
+{
+    char* argv[5];
+    int argc = 0;
+    int fds[2];
+    pid_t pid;
+    FILE* out;
+    char line[1024];
+    int nlines = 0;
+
+    argv[argc++] = "git";
+    argv[argc++] = "status";
+    argv[argc++] = "--porcelain";
+    /* Always state the untracked mode rather than relying on the default,
+       which the user's status.showUntrackedFiles config can change.  "no"
+       skips the expensive untracked scan entirely when "%u" was not asked
+       for; "normal" reports an untracked directory as a single line rather
+       than one line per file inside it.  Either way we only ever need to
+       know whether such a file exists, so the collapsed form is enough. */
+    argv[argc++] = options->show_unknown ? "-unormal" : "-uno";
+    argv[argc] = NULL;
+
+    if (pipe(fds) < 0) {
+        debug("pipe() failed: %s", strerror(errno));
+        return;
+    }
+    pid = fork();
+    if (pid < 0) {
+        debug("fork() failed: %s", strerror(errno));
+        close(fds[0]);
+        close(fds[1]);
+        return;
+    }
+    if (pid == 0) {
+        int devnull;
+
+        close(fds[0]);
+        if (dup2(fds[1], STDOUT_FILENO) < 0)
+            _exit(127);
+        close(fds[1]);
+        /* git has plenty to say on stderr, none of it prompt material */
+        devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        execvp("git", argv);
+        _exit(127);
+    }
+
+    close(fds[1]);
+    out = fdopen(fds[0], "r");
+    if (out == NULL) {
+        debug("fdopen() failed: %s", strerror(errno));
+        close(fds[0]);
+        waitpid(pid, NULL, 0);
+        return;
+    }
+
+    while (fgets(line, sizeof(line), out) != NULL) {
+        /* each line is "XY <path>": X is the status of the index against
+           HEAD, Y that of the working tree against the index */
+        int truncated = (strchr(line, '\n') == NULL);
+
+        nlines++;
+
+        if (line[0] == '\0' || line[1] == '\0')
+            continue;
+        if (line[0] == '?' && line[1] == '?')
+            result->unknown = 1;
+        else {
+            if (line[0] != ' ')
+                result->staged = 1;
+            if (line[1] != ' ')
+                result->modified = 1;
+        }
+
+        /* a path longer than our buffer would otherwise have its tail
+           parsed as though it were another status line */
+        if (truncated) {
+            int c;
+            while ((c = fgetc(out)) != EOF && c != '\n')
+                ;
+        }
+
+        /* everything asked for has been answered: no point reading the
+           rest of a potentially enormous status listing */
+        if ((!options->show_modified || result->modified)
+            && (!options->show_staged || result->staged)
+            && (!options->show_unknown || result->unknown))
+            break;
+    }
+
+    debug("read %d line(s) of git status output", nlines);
+    fclose(out);
+    waitpid(pid, NULL, 0);
+}
+
+int
+git_probe(void)
 {
     char gitdir[1024];
 
@@ -162,8 +271,8 @@ git_probe(vccontext_t* context)
     return git_dir(gitdir, sizeof(gitdir));
 }
 
-static result_t*
-git_get_info(vccontext_t* context)
+result_t*
+git_get_info(options_t* options)
 {
     result_t* result = init_result();
     char buf[1024];
@@ -185,7 +294,7 @@ git_get_info(vccontext_t* context)
         char* prefix = "ref: refs/heads/";
         int prefixlen = strlen(prefix);
 
-        if (context->options->show_branch || context->options->show_revision) {
+        if (options->show_branch || options->show_revision) {
             int found_branch = 0;
             if (strncmp(prefix, buf, prefixlen) == 0) {
                 /* yep, we're on a known branch */
@@ -200,7 +309,7 @@ git_get_info(vccontext_t* context)
                 result_set_branch(result, "(unknown)");
                 result_set_revision(result, buf, 12);
             }
-            if (context->options->show_revision && found_branch) {
+            if (options->show_revision && found_branch) {
                 char buf[1024];
                 char commondir[1024];
                 char filename[1024];
@@ -220,35 +329,10 @@ git_get_info(vccontext_t* context)
                 }
             }
         }
-        if (context->options->show_modified) {
-            int status = system("git diff --no-ext-diff --quiet --exit-code");
-            if (WEXITSTATUS(status) == 1)       /* files modified */
-                result->modified = 1;
-            /* any other outcome (including failure to fork/exec,
-               failure to run git, or diff error): assume no
-               modifications */
-        }
-        if (context->options->show_staged) {
-          //git diff --name-only --cached
-            int status = system("git diff --cached --no-ext-diff --quiet --exit-code");
-            if (WEXITSTATUS(status) == 1)       /* files modified */
-              result->staged = 1;
-            /* any other outcome (including failure to fork/exec,
-               failure to run git, or diff error): assume no
-               modifications */
-        }
-        if (context->options->show_unknown) {
-            int status = system("test -n \"$(git ls-files --others --exclude-standard)\"");
-            if (WEXITSTATUS(status) == 0)
-                result->unknown = 1;
-            /* again, ignore other errors and assume no unknown files */
-        }
+        if (options->show_modified || options->show_staged
+            || options->show_unknown)
+            git_status(options, result);
     }
 
     return result;
-}
-
-vccontext_t* get_git_context(options_t* options)
-{
-    return init_context("git", options, git_probe, git_get_info);
 }
